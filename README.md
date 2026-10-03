@@ -1,198 +1,148 @@
-# offline-smart-doorbell
-Offline visitor recognition on Raspberry Pi, EC-ENG 635 Fall 2026
-# Offline Smart Doorbell: Efficient Open-Set Face Recognition on the Edge
+# Offline Smart Doorbell
 
-**Course:** EC-ENG 535/635 (Fall 2026), UMass Amherst | **Instructor:** Prof. Fatima Anwar
-**Team:** Zoya Siddiqui, Vijay Rayavarapu, Athiniraj Karthigairaj 
+EC-ENG 535/635 Course Project, Fall 2026, UMass Amherst
+Instructor: Prof. Fatima Anwar
+Team: Zoya Siddiqui, Vijay Rayavarapu, Athiniraj Karthigairaj
 
----
+## Motivation
 
-## 1. Motivation
+Most smart doorbells (Ring, Nest, etc.) send video to the cloud to recognize who is at the door. That means footage of your family and visitors is stored on someone else's servers, and the "smart" features stop working if the internet goes down. We want to build a doorbell that does all of the recognition locally on a Raspberry Pi, so nothing leaves the device.
 
-Commercial smart doorbells offload recognition to the cloud. Video of household members and visitors leaves the home, recognition fails when connectivity drops, and every event pays a network round-trip. Running recognition fully on-device removes these problems but introduces a different one: a Raspberry Pi has no dedicated neural accelerator, a few GB of shared memory, and throttles under sustained load. The question is not whether a face recognizer *can* run on a Pi (it can), but **what accuracy, latency, and reliability are actually achievable under these constraints, and where the bottlenecks are.**
+Getting a face recognition model to run on a Pi is not that hard by itself. What we're more interested in is how well it works once you account for the Pi's limits (no GPU, limited memory, overheating under load) and for what a doorbell actually sees. People at a door are often at an angle, wearing hats or masks, or standing in bad lighting, and most of them are strangers the system has never seen. The system has to say "unknown" for those people instead of matching them to the closest household member. Mistaking a stranger for a family member is a much worse error than the reverse, so we care a lot about where we set the matching threshold.
 
-A doorbell is also a harder recognition problem than it first appears:
+We also want to see what happens when we shrink the models with quantization. Converting a model to INT8 makes it faster and smaller, but it can change the face embeddings slightly, which could mean the threshold we picked for the full model no longer works.
 
-- **It is open-set.** Most people at the door are strangers who were never enrolled. The system must reject unknowns, not just pick the closest known face. A wrong "known" decision (false accept) is far more costly than a wrong "unknown" (false reject), so the operating point matters more than raw accuracy.
-- **Enrollment data is tiny.** Each household member provides only 5–10 photos, typically frontal and well-lit.
-- **Doorway conditions differ from benchmarks.** Faces at a door are off-angle, partially occluded (hats, masks, sunglasses), backlit, or captured at night. Standard benchmarks such as LFW are near-saturated and mostly frontal, so benchmark accuracy will overestimate real performance.
-- **Compression is not free.** Quantization can shift embedding geometry, which directly moves the decision threshold even when top-1 accuracy looks unchanged.
+## What we want to find out
 
-This project builds a working offline doorbell and uses it to measure these trade-offs systematically.
+1. How much does INT8 quantization hurt recognition accuracy, especially for strangers being wrongly accepted? Is the drop the same in good and bad conditions, or worse in the hard cases (side angles, low light)?
+2. Which part of the pipeline is slowest on the Pi, and can we keep it running without overheating by only running the models when there's motion?
+3. How many photos per person do we need for enrollment, and how should we choose the threshold?
 
-## 2. Research Questions
+## Design goals
 
-**RQ1: Quantization vs. recognition quality.** How much does INT8 post-training quantization of the embedding model degrade open-set verification (TAR at a fixed FAR), and is the degradation uniform across conditions (lighting, pose, occlusion) or concentrated in the hard cases?
+We set some initial targets, which we'll adjust after we get our first measurements:
 
-**RQ2: System bottlenecks.** Which pipeline stage dominates end-to-end latency on the Pi, and can motion gating keep sustained operation within thermal limits without missing visitors?
+- Everything runs offline, with no network calls needed for recognition
+- A decision within about half a second of someone showing up
+- At least 5 FPS while someone is in front of the camera
+- Strangers wrongly recognized as household members less than 1% of the time
+- Household members correctly recognized at least 90% of the time
+- All models together under 20 MB
+- Adding a new person should take 10 photos or fewer and no retraining
 
-**RQ3: Enrollment and calibration.** How many enrollment images per person are needed, and how should the rejection threshold be calibrated so the false accept rate stays low on doorway-condition data rather than only on benchmark data?
+## How it will work
 
-## 3. Design Goals
+The camera runs continuously, but we only run the models when simple motion detection (comparing consecutive frames) sees something change. This saves compute and should help with overheating. When there's motion, we detect the face, crop and align it, and pass it through a small embedding model (something like MobileFaceNet). We compare the resulting embedding to the stored embeddings of each household member using cosine similarity. If the best match is above our threshold, it's that person; otherwise it's "unknown."
 
-| Goal | Initial Target | Rationale |
-|---|---|---|
-| Fully offline operation | No network calls in the recognition path | Privacy and robustness to connectivity loss |
-| End-to-end latency (person enters frame → decision) | p95 < 500 ms | Decision should arrive before the visitor rings or leaves |
-| Throughput while a person is present | ≥ 5 FPS | Enough frames to aggregate decisions over a short window |
-| False accept rate on doorway data | ≤ 1% | Strangers must almost never be labeled as household members |
-| True accept rate at that FAR | ≥ 90% | Household members should rarely be flagged as unknown |
-| Total model footprint | < 20 MB | Leaves memory headroom for capture and buffering |
-| Enrollment | ≤ 10 images per person, no retraining | Practical for a real household |
+Rather than deciding from a single frame, we'll combine the results from a few frames in a row, since one blurry frame shouldn't decide the outcome.
 
-These are hypotheses to test, not guarantees. They will be revised after baseline measurements in Week 3.
-
-## 4. Technical Approach
-
-**Pipeline.** Motion gating (frame differencing) runs cheaply on every frame. Only when motion is detected does the system run face/person detection, then alignment, embedding, and matching. This keeps average compute low and limits thermal load.
-
-**Open-set matching.** Each enrolled person is represented by the mean of their L2-normalized embeddings. A query is accepted as person *k* only if cosine similarity to *k* exceeds a calibrated threshold; otherwise it is labeled unknown. We will compare a single global threshold against per-person thresholds.
-
-**Temporal aggregation.** Instead of deciding from one frame, decisions are aggregated over a short window (e.g., majority vote or mean similarity over N frames). This trades a small amount of latency for robustness to a single bad frame.
-
-**Quantization.** Models are converted to TFLite and evaluated at FP32, FP16, and INT8 (post-training, per-channel, calibrated on a representative set). Beyond accuracy, we measure **embedding drift**: the cosine similarity between FP32 and INT8 embeddings of the same image, which shows whether the threshold needs to be recalibrated after quantization.
-
-**Delivery-person detection.** A small classifier fine-tuned on delivery-uniform and package imagery. Data for this is scarce, so we treat it as a stretch component with a few-shot fine-tuning baseline.
-
-## 5. Evaluation Methodology
-
-**Datasets**
-- **LFW** for a standard verification baseline and comparison with published numbers.
-- **Doorway test set (collected by the team):** consenting team members and volunteers captured under controlled variation in lighting (day, dusk, artificial light, backlit), pose (frontal, ±30°, ±60°), distance (0.5–2 m), and occlusion (hat, mask, glasses). Non-enrolled volunteers serve as the "stranger" set. This is the primary evaluation set, because LFW will overestimate performance.
-
-**Metrics**
-- Verification: ROC curve, TAR @ FAR = 1% and 0.1%, equal error rate (EER)
-- Open-set: false accept rate on strangers, false reject rate on enrolled members, broken down by condition
-- Detection: recall of face/person detection at doorway distances and angles
-- System: per-stage latency (capture, detect, embed, match) at p50 and p95, FPS, peak memory, model size, CPU temperature and throttling under sustained load
-- Quantization: accuracy deltas and embedding drift (FP32 vs. INT8 cosine similarity)
-
-**Baselines and Ablations**
-- 2–3 backbones (e.g., MobileFaceNet vs. MobileNetV2/V3-based embedders) × 3 precisions (FP32, FP16, INT8)
-- Single-frame vs. temporally aggregated decisions
-- Global vs. per-person thresholds
-- 1, 3, 5, and 10 enrollment images per person
-- With vs. without motion gating (latency, temperature, missed visitors)
-
-## 6. Deliverables
-
-1. Working offline pipeline on Raspberry Pi: capture → motion gating → detection → alignment → embedding → open-set matching → decision.
-2. Enrollment tool that registers a new household member from ≤ 10 photos without retraining.
-3. Three visitor classes: Known / Unknown / Delivery person.
-4. Alert mechanism (push notification) and local log with timestamped snapshots.
-5. Quantization and backbone study answering RQ1, with accuracy-vs-latency trade-off plots.
-6. Latency breakdown and thermal analysis answering RQ2.
-7. Enrollment-size and threshold calibration analysis answering RQ3.
-8. Live demonstration on the device and a final report.
-
-## 7. System Blocks
+For the delivery-person feature, we'll try fine-tuning a small classifier on images of delivery uniforms and packages. We aren't sure how much good training data we'll find for this, so we're treating it as a stretch goal.
 
 ```mermaid
 flowchart LR
-    A[Pi Camera] --> B[Frame Capture<br/>picamera2 / OpenCV]
-    B --> M{Motion<br/>Gating}
-    M -- No motion --> B
-    M -- Motion --> C[Face / Person<br/>Detection]
-    C --> D[Alignment &<br/>Crop]
-    C --> H[Delivery Person<br/>Classifier]
-    D --> E[Embedding Model<br/>TFLite FP32/FP16/INT8]
-    E --> F[Open-Set Matching<br/>cosine sim + threshold]
-    G[(Enrolled<br/>Embeddings)] --> F
-    F --> T[Temporal<br/>Aggregation]
+    A[Pi Camera] --> B[Frame Capture]
+    B --> M{Motion?}
+    M -- No --> B
+    M -- Yes --> C[Face / Person Detection]
+    C --> D[Align + Crop]
+    C --> H[Delivery Classifier]
+    D --> E[Embedding Model - TFLite]
+    E --> F[Match vs Enrolled Faces]
+    G[(Enrolled Embeddings)] --> F
+    F --> T[Combine Over Frames]
     H --> T
-    T --> I[Decision:<br/>Known / Unknown / Delivery]
-    I --> J[Push Alert]
-    I --> K[Local Log +<br/>Snapshot]
+    T --> I[Known / Unknown / Delivery]
+    I --> J[Phone Alert]
+    I --> K[Log + Snapshot]
 ```
 
-## 8. Hardware / Software Requirements
+## Testing plan
 
-**Hardware**
-- Raspberry Pi 4 (4 GB+) or Raspberry Pi 5
-- Raspberry Pi Camera Module (or USB webcam)
-- 32 GB+ microSD, official power supply, heatsink/fan (thermal behavior is part of the evaluation, so cooling must be documented)
-- Optional: USB power meter for energy measurements
+We'll use LFW as a standard benchmark so we can compare against published results. However, LFW is mostly clear frontal photos, so it will probably make our system look better than it really is. Our main test set will be photos and short clips we take ourselves at a door (with everyone's permission), covering daytime vs. night, different angles and distances, and things like hats, masks, and glasses. Friends who aren't enrolled will act as strangers.
 
-**Software**
-- Raspberry Pi OS (64-bit), Python 3.11
-- Inference: TensorFlow Lite runtime; ONNX Runtime as an alternative backend
-- Vision: OpenCV, picamera2
-- Training and conversion: Google Colab, TensorFlow/Keras or PyTorch
-- Alerts: Telegram bot API or ntfy
-- Evaluation: NumPy, scikit-learn (ROC/EER), Matplotlib
-- Version control: Git/GitHub
+We'll compare 2–3 embedding models at FP32, FP16, and INT8 and measure:
 
-## 9. Risks and Mitigations
+- accuracy for known people and how often strangers get accepted, broken down by condition
+- latency for each stage of the pipeline, plus overall FPS
+- memory use and model size
+- CPU temperature over a longer run
+- how much the embeddings themselves change after quantization
 
-| Risk | Impact | Mitigation |
+We'll also try different numbers of enrollment photos (1, 3, 5, 10) and see how much that matters.
+
+## Deliverables
+
+- The full pipeline running offline on the Pi
+- A script to enroll new household members
+- Known / unknown / delivery-person classification
+- Phone notifications and a local log with snapshots
+- Results and plots from the quantization and model comparison
+- A live demo and final report
+
+## Hardware and software
+
+Hardware: Raspberry Pi running Raspberry Pi OS (Bookworm), Raspberry Pi Camera Module, a push button wired to the Pi's GPIO pins as the doorbell button, microSD card, power supply, and a heatsink or fan. Since overheating is part of what we're measuring, we'll note what cooling we use.
+
+Software:
+- Python 3
+- Flask and Flask-SocketIO for a live web dashboard (python-socketio, python-engineio)
+- face_recognition (dlib-based) as our baseline face recognition model
+- OpenCV, NumPy, and Pillow for image capture and processing
+- picamera2 for the Pi camera
+- RPi.GPIO for the doorbell button
+- eventlet and gunicorn for running the web server
+- TensorFlow Lite for the lightweight models we quantize and compare against the baseline
+- Google Colab for training and model conversion
+- A Telegram bot for phone alerts
+- scikit-learn and Matplotlib for analysis
+
+## Known limitations and things we're watching for
+
+- If quantization changes the embeddings too much, we'll recalibrate the threshold for each version or fall back to FP16.
+- If the Pi overheats and slows down, we'll report numbers both with and without throttling.
+- Night and backlit conditions will probably be the weakest. We may try contrast enhancement (CLAHE) on the input.
+- The system won't detect someone holding up a printed photo of a family member. We'll test this and report it as a limitation.
+- Our test set is small, so we won't make broad claims about how well this works for everyone. Face recognition is known to perform differently across demographic groups, and our data can't tell us much about that.
+- Face photos and embeddings stay on the device and won't be uploaded to this repo.
+
+## Team roles
+
+| Role | Lead | Support |
 |---|---|---|
-| INT8 quantization shifts embeddings and breaks the threshold | Higher false accepts | Measure embedding drift; recalibrate threshold per precision; fall back to FP16 if loss is too large |
-| Pi throttles under sustained inference | Latency spikes, missed frames | Motion gating, active cooling, report throttled vs. unthrottled numbers |
-| Poor accuracy at night or backlit | Real-world failure | Include these conditions in the test set; evaluate histogram equalization / CLAHE preprocessing |
-| Too little delivery-person data | Weak classifier | Treat as stretch goal; few-shot fine-tuning; report honestly if unreliable |
-| Small stranger set inflates confidence in FAR | Misleading results | Report confidence intervals; supplement strangers with LFW identities |
+| Setup | Vijay | Athinraj |
+| Software | Vijay | Zoya |
+| Networking | Athinraj | Vijay |
+| Algorithm design | Zoya | Athinraj |
+| Research | Zoya | Athinraj |
+| Writing | Athinraj | Zoya, Vijay |
 
-## 10. Limitations and Ethical Considerations
+Zoya will handle model selection, training and conversion, the matching and threshold work, and the quantization experiments. She has worked with PyTorch model training, YOLO detection validation, and GPU benchmarking before.
 
-- **Spoofing:** The system does not include liveness detection, so a printed photo of a household member may be accepted. We will test a simple print attack and report the result as a known limitation rather than claim security.
-- **Demographic performance:** Face recognition accuracy can vary across demographic groups. Our test set is small and not representative, so we will avoid general claims and note this explicitly.
-- **Consent and data handling:** Only consenting participants are photographed. Face images and embeddings stay on-device and are excluded from this repository via `.gitignore`.
+Vijay will set up the Pi and camera, build the capture loop and motion detection, put the full pipeline together on the device, write the enrollment script, and measure latency and temperature. [Add Vijay's relevant experience.]
 
-## 11. Team Members and Responsibilities
+Athinraj will build the alert and logging system, plan and run the test-set collection, help with the delivery classifier, and keep our documentation and reports together. [Add Athinraj's relevant experience.]
 
-| Lead Role | Lead | Support |
+## Timeline
+
+| Dates | Plan | Who |
 |---|---|---|
-| Setup (Pi, camera, OS, cooling, environment) | Vijay | Athinraj |
-| Software (pipeline, integration, enrollment tool) | Vijay | Zoya |
-| Networking (alerts, notifications, logging) | Athinraj | Vijay |
-| Algorithm Design (models, matching, calibration, quantization) | Zoya | Athinraj |
-| Research (literature, evaluation design, analysis) | Zoya | Athinraj |
-| Writing (documentation, check-ins, final report) | Athinraj | Zoya, Vijay |
+| Oct 3 | Repo and proposal submitted | All |
+| Oct 5 – 16 | Read up on related work, set up the Pi and camera, get the capture loop and motion detection working, plan the test-set collection | Zoya, Vijay, Athinraj |
+| Oct 19 – 30 | Baseline models on Colab, LFW results, collect our own test set, first version of alerts | Zoya, Athinraj |
+| Nov 2 – 13 | Convert models to TFLite, run the full pipeline on the Pi, enrollment script, first latency numbers | Vijay, Zoya |
+| Nov 16 – 25 | Quantization and model comparison, threshold tuning, enrollment-size tests, delivery classifier | Zoya, Vijay, Athinraj |
+| Nov 30 – Dec 6 | Full evaluation, temperature tests, photo spoofing test, plots | All |
+| Dec 7 onward | Demo prep and final report | All |
 
-- **Zoya Siddiqui:** Model selection, training and conversion, open-set matching and threshold calibration, quantization study, and evaluation design (RQ1, RQ3). Prior experience in PyTorch model training, YOLO detection validation, and GPU benchmarking.
-- **Vijay [Last Name]:** Raspberry Pi setup, capture pipeline with motion gating, on-device integration, enrollment tool, and latency/thermal profiling (RQ2).
-- **Athinraj [Last Name]:** Alert and logging system, doorway test-set collection protocol, delivery-person classifier support, and coordination of documentation and the final report.
+We'll adjust these once the check-in dates are announced.
 
-## 12. Project Timeline
+## References
 
-| Dates | Milestone | Owner |
-|---|---|---|
-| Oct 3 | Repository and proposal submitted | All |
-| Oct 5 – Oct 16 | Literature review; Pi + camera setup; capture loop with motion gating; design test-set collection protocol | Zoya (research), Vijay (setup), Athinraj (protocol) |
-| Oct 19 – Oct 30 | Baseline detection + embedding on Colab; LFW verification baseline; collect doorway test set; alert prototype | Zoya (models), Athinraj (data, alerts), Vijay (capture support) |
-| Nov 2 – Nov 13 | TFLite conversion; full pipeline on Pi; enrollment tool; first per-stage latency breakdown | Vijay (deploy), Zoya (conversion) |
-| Nov 16 – Nov 25 | Quantization and backbone study; threshold calibration; enrollment-size ablation; delivery classifier | Zoya (RQ1, RQ3), Vijay (RQ2 profiling), Athinraj (delivery classifier) |
-| Nov 30 – Dec 6 | End-to-end evaluation on doorway set; thermal analysis; spoofing test; plots | All |
-| Dec 7 – final deadline | Demo preparation, final report, repository cleanup | Athinraj (report lead), All |
-
-Dates will be aligned with course check-ins once announced.
-
-## 13. Repository Structure (planned)
-
-```
-offline-smart-doorbell/
-├── README.md
-├── docs/            # proposal, check-in notes, final report, figures
-├── notebooks/       # Colab training, conversion, and analysis notebooks
-├── models/          # exported .tflite models (small ones only)
-├── src/
-│   ├── capture.py   # camera loop + motion gating
-│   ├── detect.py    # face/person detection
-│   ├── embed.py     # embedding inference
-│   ├── match.py     # enrolled database, open-set matching, aggregation
-│   ├── enroll.py    # add household members
-│   └── alert.py     # notifications + logging
-├── benchmarks/      # latency, thermal, and accuracy scripts and results
-└── requirements.txt
-```
-
-## 14. References
-
-1. A. G. Howard et al., "MobileNets: Efficient Convolutional Neural Networks for Mobile Vision Applications," arXiv:1704.04861, 2017.
-2. F. Schroff, D. Kalenichenko, J. Philbin, "FaceNet: A Unified Embedding for Face Recognition and Clustering," CVPR 2015 (arXiv:1503.03832).
-3. S. Chen et al., "MobileFaceNets: Efficient CNNs for Accurate Real-Time Face Verification on Mobile Devices," arXiv:1804.07573, 2018.
-4. J. Deng et al., "ArcFace: Additive Angular Margin Loss for Deep Face Recognition," CVPR 2019 (arXiv:1801.07698).
-5. V. Bazarevsky et al., "BlazeFace: Sub-millisecond Neural Face Detection on Mobile GPUs," arXiv:1907.05047, 2019.
-6. B. Jacob et al., "Quantization and Training of Neural Networks for Efficient Integer-Arithmetic-Only Inference," CVPR 2018 (arXiv:1712.05877).
-7. G. B. Huang et al., "Labeled Faces in the Wild: A Database for Studying Face Recognition in Unconstrained Environments," UMass Amherst Tech Report 07-49, 2007.
-8. TensorFlow Lite documentation: https://www.tensorflow.org/lite
+1. Howard et al., "MobileNets: Efficient Convolutional Neural Networks for Mobile Vision Applications," arXiv:1704.04861, 2017.
+2. Schroff, Kalenichenko, Philbin, "FaceNet: A Unified Embedding for Face Recognition and Clustering," CVPR 2015.
+3. Chen et al., "MobileFaceNets: Efficient CNNs for Accurate Real-Time Face Verification on Mobile Devices," arXiv:1804.07573, 2018.
+4. Deng et al., "ArcFace: Additive Angular Margin Loss for Deep Face Recognition," CVPR 2019.
+5. Bazarevsky et al., "BlazeFace: Sub-millisecond Neural Face Detection on Mobile GPUs," arXiv:1907.05047, 2019.
+6. Jacob et al., "Quantization and Training of Neural Networks for Efficient Integer-Arithmetic-Only Inference," CVPR 2018.
+7. Huang et al., "Labeled Faces in the Wild," UMass Amherst Tech Report 07-49, 2007.
+8. TensorFlow Lite docs: https://www.tensorflow.org/lite

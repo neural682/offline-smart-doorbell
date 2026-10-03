@@ -1,7 +1,9 @@
 # Offline Smart Doorbell
 
 EC-ENG 535/635 Course Project, Fall 2026, UMass Amherst
+
 Instructor: Prof. Fatima Anwar
+
 Team: Zoya Siddiqui, Vijay Rayavarapu, Athiniraj Karthigairaj
 
 ## Motivation

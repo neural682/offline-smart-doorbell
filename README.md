@@ -32,7 +32,7 @@ We set some initial targets, which we'll adjust after we get our first measureme
 - All models together under 20 MB
 - Adding a new person should take 10 photos or fewer and no retraining
 
-## How it will work
+## System Blocks
 
 The camera runs continuously, but we only run the models when simple motion detection (comparing consecutive frames) sees something change. This saves compute and should help with overheating. When there's motion, we detect the face, crop and align it, and pass it through a small embedding model (something like MobileFaceNet). We compare the resulting embedding to the stored embeddings of each household member using cosine similarity. If the best match is above our threshold, it's that person; otherwise it's "unknown."
 
@@ -57,20 +57,6 @@ flowchart LR
     I --> J[Phone Alert]
     I --> K[Log + Snapshot]
 ```
-
-## Testing plan
-
-We'll use LFW as a standard benchmark so we can compare against published results. However, LFW is mostly clear frontal photos, so it will probably make our system look better than it really is. Our main test set will be photos and short clips we take ourselves at a door (with everyone's permission), covering daytime vs. night, different angles and distances, and things like hats, masks, and glasses. Friends who aren't enrolled will act as strangers.
-
-We'll compare 2–3 embedding models at FP32, FP16, and INT8 and measure:
-
-- accuracy for known people and how often strangers get accepted, broken down by condition
-- latency for each stage of the pipeline, plus overall FPS
-- memory use and model size
-- CPU temperature over a longer run
-- how much the embeddings themselves change after quantization
-
-We'll also try different numbers of enrollment photos (1, 3, 5, 10) and see how much that matters.
 
 ## Deliverables
 
@@ -98,7 +84,7 @@ Software:
 - A Telegram bot for phone alerts
 - scikit-learn and Matplotlib for analysis
 
-## Known limitations and things we're watching for
+## Limitation
 
 - If quantization changes the embeddings too much, we'll recalibrate the threshold for each version or fall back to FP16.
 - If the Pi overheats and slows down, we'll report numbers both with and without throttling.

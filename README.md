@@ -61,7 +61,7 @@ flowchart LR
 - Results and plots from the quantization and model comparison
 - A live demo and final report
 
-## Hardware and software
+## Hardware 
 
 Hardware: A Raspberry Pi running Raspberry Pi OS (Bookworm), the Pi Camera Module, a push button on the GPIO pins as the doorbell, a microSD card, a power supply, and a heatsink or fan. We will document the cooling setup since temperature is one of our measurements.
 

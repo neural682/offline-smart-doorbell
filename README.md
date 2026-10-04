@@ -97,18 +97,12 @@ Software:
 
 | Role | Lead | Support |
 |---|---|---|
-| Setup | Vijay | Athinraj |
-| Software | Vijay | Zoya |
-| Networking | Athinraj | Vijay |
-| Algorithm design | Zoya | Athinraj |
-| Research | Zoya | Athinraj |
-| Writing | Athinraj | Zoya, Vijay |
-
-Zoya will handle model selection, training and conversion, the matching and threshold work, and the quantization experiments. She has worked with PyTorch model training, YOLO detection validation, and GPU benchmarking before.
-
-Vijay will set up the Pi and camera, build the capture loop and motion detection, put the full pipeline together on the device, write the enrollment script, and measure latency and temperature. [ relevant experience.]
-
-Athinraj will build the alert and logging system, plan and run the test-set collection, help with the delivery classifier, and keep our documentation and reports together. [relevant experience.]
+| Setup | Vijay |
+| Software | Zoya |
+| Networking | Vijay |
+| Algorithm design | Zoya |
+| Research | Zoya | Vijay |
+| Writing | Zoya, Vijay |
 
 ## Timeline
 

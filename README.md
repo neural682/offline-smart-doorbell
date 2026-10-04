@@ -95,13 +95,13 @@ Software:
 
 ## Team roles
 
-| Role | Lead | Support |
+| Role | 
 |---|---|---|
 | Setup | Vijay |
 | Software | Zoya |
 | Networking | Vijay |
 | Algorithm design | Zoya |
-| Research | Zoya | Vijay |
+| Research | Zoya, Vijay |
 | Writing | Zoya, Vijay |
 
 ## Timeline

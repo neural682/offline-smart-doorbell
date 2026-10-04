@@ -84,14 +84,6 @@ Software:
 - A Telegram bot for phone alerts
 - scikit-learn and Matplotlib for analysis
 
-## Limitation
-
-- If quantization changes the embeddings too much, we'll recalibrate the threshold for each version or fall back to FP16.
-- If the Pi overheats and slows down, we'll report numbers both with and without throttling.
-- Night and backlit conditions will probably be the weakest. We may try contrast enhancement (CLAHE) on the input.
-- The system won't detect someone holding up a printed photo of a family member. We'll test this and report it as a limitation.
-- Our test set is small, so we won't make broad claims about how well this works for everyone. Face recognition is known to perform differently across demographic groups, and our data can't tell us much about that.
-- Face photos and embeddings stay on the device and won't be uploaded to this repo.
 
 ## Team roles
 

@@ -14,12 +14,6 @@ Getting a face recognition model to run on a Pi is not that hard by itself. What
 
 We also want to see what happens when we shrink the models with quantization. Converting a model to INT8 makes it faster and smaller, but it can change the face embeddings slightly, which could mean the threshold we picked for the full model no longer works.
 
-## What we want to find out
-
-1. How much does INT8 quantization hurt recognition accuracy, especially for strangers being wrongly accepted? Is the drop the same in good and bad conditions, or worse in the hard cases (side angles, low light)?
-2. Which part of the pipeline is slowest on the Pi, and can we keep it running without overheating by only running the models when there's motion?
-3. How many photos per person do we need for enrollment, and how should we choose the threshold?
-
 ## Design goals
 
 We set some initial targets, which we'll adjust after we get our first measurements:
@@ -69,20 +63,20 @@ flowchart LR
 
 ## Hardware and software
 
-Hardware: Raspberry Pi running Raspberry Pi OS (Bookworm), Raspberry Pi Camera Module, a push button wired to the Pi's GPIO pins as the doorbell button, microSD card, power supply, and a heatsink or fan. Since overheating is part of what we're measuring, we'll note what cooling we use.
+Hardware: A Raspberry Pi running Raspberry Pi OS (Bookworm), the Pi Camera Module, a push button on the GPIO pins as the doorbell, a microSD card, a power supply, and a heatsink or fan. We will document the cooling setup since temperature is one of our measurements.
 
-Software:
-- Python 3
-- Flask and Flask-SocketIO for a live web dashboard (python-socketio, python-engineio)
-- face_recognition (dlib-based) as our baseline face recognition model
-- OpenCV, NumPy, and Pillow for image capture and processing
-- picamera2 for the Pi camera
-- RPi.GPIO for the doorbell button
-- eventlet and gunicorn for running the web server
-- TensorFlow Lite for the lightweight models we quantize and compare against the baseline
-- Google Colab for training and model conversion
-- A Telegram bot for phone alerts
-- scikit-learn and Matplotlib for analysis
+## Software:
+
+Python 3
+picamera2 (camera)
+RPi.GPIO (doorbell button)
+OpenCV, NumPy, Pillow (image processing)
+face_recognition / dlib (baseline face recognition)
+TensorFlow Lite (lightweight quantized models)
+Google Colab (training and model conversion)
+Flask, Flask-SocketIO, eventlet, gunicorn (live web dashboard)
+Telegram bot API (phone alerts)
+scikit-learn, Matplotlib (evaluation and plots)
 
 
 ## Team roles
